@@ -1,0 +1,237 @@
+'use strict';
+
+const webpush = require('web-push');
+const ydbMod = require('ydb-sdk');
+
+let driverPromise = null;
+
+const CFG = {
+  endpoint: process.env.YDB_ENDPOINT || '',
+  database: process.env.YDB_DATABASE || '',
+  prefix: process.env.YDB_TABLE_PREFIX || 'vi3_',
+  adminSecret: process.env.ADMIN_SECRET || '',
+  vapidPublicKey: process.env.VAPID_PUBLIC_KEY || '',
+  vapidPrivateKey: process.env.VAPID_PRIVATE_KEY || '',
+  vapidSubject: process.env.VAPID_SUBJECT || 'mailto:apel-s-in@ya.ru',
+  corsOrigins: String(process.env.CORS_ORIGINS || 'https://vi3na1bita.website.yandexcloud.net,https://apel-s-in.github.io')
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean)
+};
+
+const TABLE = `${CFG.prefix}kv`;
+
+const safe = v => String(v == null ? '' : v).trim();
+const num = (v, d = 0) => Number.isFinite(Number(v)) ? Number(v) : d;
+
+if (CFG.vapidPublicKey && CFG.vapidPrivateKey) {
+  webpush.setVapidDetails(CFG.vapidSubject, CFG.vapidPublicKey, CFG.vapidPrivateKey);
+}
+
+function parseBody(event) {
+  if (!event?.body) return event || {};
+  const text = event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : String(event.body || '{}');
+  try { return JSON.parse(text || '{}') || {}; } catch { return {}; }
+}
+
+function corsHeaders(event) {
+  const h = event.headers || {};
+  const origin = safe(h.origin || h.Origin || '');
+  const allow = CFG.corsOrigins.includes('*') ? '*' : (CFG.corsOrigins.includes(origin) ? origin : CFG.corsOrigins[0] || '*');
+  return {
+    'Access-Control-Allow-Origin': allow,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, X-Vi3-Admin',
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin'
+  };
+}
+
+function reply(event, statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      ...corsHeaders(event),
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff'
+    },
+    body: JSON.stringify(body)
+  };
+}
+
+function valueOf(x) {
+  if (x == null) return null;
+  if (typeof x !== 'object') return x;
+  if ('textValue' in x) return x.textValue;
+  if ('utf8Value' in x) return x.utf8Value;
+  if ('uint64Value' in x) return Number(x.uint64Value);
+  if ('int64Value' in x) return Number(x.int64Value);
+  if ('boolValue' in x) return !!x.boolValue;
+  if ('optionalValue' in x) return valueOf(x.optionalValue);
+  if ('value' in x) return valueOf(x.value);
+  return null;
+}
+
+function rowsOf(res) {
+  const rs = res?.resultSets?.[0] || res?.resultSet || null;
+  const rows = rs?.rows || [];
+  const cols = (rs?.columns || []).map(c => safe(c.name || c));
+  return rows.map(r => {
+    const items = r.items || r;
+    if (!Array.isArray(items)) return r;
+    const out = {};
+    items.forEach((it, i) => {
+      out[cols[i] || `c${i}`] = valueOf(it);
+    });
+    return out;
+  });
+}
+
+function payload(row) {
+  try { return row?.payload_json ? JSON.parse(row.payload_json) : {}; } catch { return {}; }
+}
+
+function tvUtf8(v) {
+  return ydbMod.TypedValues.utf8(String(v == null ? '' : v));
+}
+
+function tvUint64(v) {
+  return ydbMod.TypedValues.uint64(num(v, 0));
+}
+
+async function getYdb() {
+  if (driverPromise) return driverPromise;
+
+  driverPromise = (async () => {
+    const { Driver, getCredentialsFromEnv } = ydbMod;
+    if (!CFG.endpoint || !CFG.database) throw new Error('ydb_env_missing');
+
+    const driver = new Driver({
+      endpoint: CFG.endpoint,
+      database: CFG.database,
+      authService: getCredentialsFromEnv()
+    });
+
+    const ready = await driver.ready(10000);
+    if (!ready) throw new Error('ydb_not_ready');
+    return driver;
+  })();
+
+  return driverPromise;
+}
+
+async function query(sql, params = {}) {
+  const driver = await getYdb();
+  return driver.tableClient.withSession(async session => session.executeQuery(sql, params));
+}
+
+async function kvPrefix(prefix, limit = 100) {
+  const to = `${prefix}\uffff`;
+  const res = await query(`
+    DECLARE $from AS Utf8;
+    DECLARE $to AS Utf8;
+    DECLARE $lim AS Uint64;
+
+    SELECT pk, type, owner, updated_at, expires_at, payload_json
+    FROM ${TABLE}
+    WHERE pk >= $from AND pk < $to
+    LIMIT $lim;
+  `, {
+    '$from': tvUtf8(prefix),
+    '$to': tvUtf8(to),
+    '$lim': tvUint64(limit)
+  });
+
+  return rowsOf(res);
+}
+
+async function kvDelete(pk) {
+  await query(`
+    DECLARE $pk AS Utf8;
+    DELETE FROM ${TABLE}
+    WHERE pk = $pk;
+  `, { '$pk': tvUtf8(pk) });
+}
+
+async function sendToSubscription(row, notification) {
+  const data = payload(row);
+  const sub = data.subscription;
+  if (!sub?.endpoint) return { ok: false, reason: 'bad_subscription' };
+
+  try {
+    await webpush.sendNotification(sub, JSON.stringify(notification), { TTL: 60 });
+    return { ok: true };
+  } catch (err) {
+    const status = Number(err.statusCode || err.status || 0);
+    if (status === 404 || status === 410) {
+      await kvDelete(row.pk).catch(() => null);
+      return { ok: false, reason: 'subscription_gone', deleted: true };
+    }
+    return { ok: false, reason: err.message || 'webpush_error', status };
+  }
+}
+
+async function actionSendToPlayer(event, body) {
+  if (!CFG.adminSecret || safe(body.adminSecret || event.headers?.['x-vi3-admin']) !== CFG.adminSecret) {
+    return { ok: false, error: 'bad_admin_secret' };
+  }
+
+  if (!CFG.vapidPublicKey || !CFG.vapidPrivateKey) {
+    return { ok: false, error: 'vapid_env_missing' };
+  }
+
+  const playerId = safe(body.playerId || body.toPlayerId || body.toFriendId);
+  if (!playerId) return { ok: false, error: 'player_required' };
+
+  const notification = {
+    title: safe(body.title || 'Витрина Разбита').slice(0, 80),
+    body: safe(body.body || body.text || 'Новое уведомление').slice(0, 220),
+    url: safe(body.url || './'),
+    tag: safe(body.tag || `vi3-${playerId}`).slice(0, 80),
+    requireInteraction: body.requireInteraction === true
+  };
+
+  const rows = await kvPrefix(`webPushSub:${playerId}:`, 20);
+  const results = [];
+
+  for (const row of rows) {
+    results.push(await sendToSubscription(row, notification));
+  }
+
+  return {
+    ok: true,
+    playerId,
+    subscriptions: rows.length,
+    sent: results.filter(x => x.ok).length,
+    results
+  };
+}
+
+exports.handler = async event => {
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders(event), body: '' };
+
+  const body = parseBody(event);
+  const action = safe(body.action || event.queryStringParameters?.action || 'ping');
+
+  try {
+    if (action === 'ping') {
+      return reply(event, 200, {
+        ok: true,
+        service: 'vi3-webpush',
+        ydbConfigured: !!(CFG.endpoint && CFG.database),
+        vapidConfigured: !!(CFG.vapidPublicKey && CFG.vapidPrivateKey),
+        table: TABLE,
+        ts: Date.now()
+      });
+    }
+
+    if (action === 'send_to_player') {
+      return reply(event, 200, await actionSendToPlayer(event, body));
+    }
+
+    return reply(event, 400, { ok: false, error: 'bad_action', allowed: ['ping', 'send_to_player'] });
+  } catch (err) {
+    return reply(event, 500, { ok: false, error: safe(err.message || 'server_error') });
+  }
+};
