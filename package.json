@@ -1,0 +1,10 @@
+{
+  "name": "vi3-webpush",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "web-push": "^3.6.7",
+    "ydb-sdk": "^5.8.0"
+  }
+}
