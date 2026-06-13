@@ -2,10 +2,10 @@
   "name": "vi3-webpush",
   "version": "1.0.0",
   "private": true,
-  "main": "index.js",
+  "type": "commonjs",
   "dependencies": {
     "@yandex-cloud/nodejs-sdk": "^2.6.0",
     "web-push": "^3.6.7",
-    "ydb-sdk": "^5.11.3"
+    "ydb-sdk": "^5.8.0"
   }
 }
