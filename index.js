@@ -189,7 +189,11 @@ async function actionSendToPlayer(event, body) {
     body: safe(body.body || body.text || 'Новое уведомление').slice(0, 220),
     url: safe(body.url || './'),
     tag: safe(body.tag || `vi3-${playerId}`).slice(0, 80),
-    requireInteraction: body.requireInteraction === true
+    requireInteraction: body.requireInteraction === true,
+    kind: safe(body.kind || ''),
+    fromFriendId: safe(body.fromFriendId || ''),
+    gameId: safe(body.gameId || ''),
+    roomId: safe(body.roomId || '')
   };
 
   const rows = await kvPrefix(`webPushSub:${playerId}:`, 20);
