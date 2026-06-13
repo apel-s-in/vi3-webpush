@@ -159,11 +159,15 @@ async function sendToSubscription(row, notification) {
   const sub = data.subscription;
   if (!sub?.endpoint) return { ok: false, reason: 'bad_subscription' };
 
+  const topic = safe(notification.tag || '')
+    .replace(/[^A-Za-z0-9_-]/g, '_')
+    .slice(0, 32);
+
   try {
     await webpush.sendNotification(sub, JSON.stringify(notification), {
       TTL: notification.kind === 'CHAT_MESSAGE' ? 86400 : 3600,
       urgency: notification.kind === 'CHAT_MESSAGE' || notification.kind === 'GAME_INVITE' ? 'high' : 'normal',
-      topic: safe(notification.tag || '').slice(0, 32) || undefined
+      topic: topic || undefined
     });
     return { ok: true };
   } catch (err) {
