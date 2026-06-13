@@ -201,7 +201,8 @@ async function actionSendToPlayer(event, body) {
     kind: safe(body.kind || ''),
     fromFriendId: safe(body.fromFriendId || ''),
     gameId: safe(body.gameId || ''),
-    roomId: safe(body.roomId || '')
+    roomId: safe(body.roomId || ''),
+    msgId: safe(body.msgId || '')
   };
 
   const rows = await kvPrefix(`webPushSub:${playerId}:`, 20);
