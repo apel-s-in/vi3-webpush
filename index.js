@@ -165,8 +165,8 @@ async function sendToSubscription(row, notification) {
 
   try {
     await webpush.sendNotification(sub, JSON.stringify(notification), {
-      TTL: notification.kind === 'CHAT_MESSAGE' ? 86400 : 3600,
-      urgency: notification.kind === 'CHAT_MESSAGE' || notification.kind === 'GAME_INVITE' ? 'high' : 'normal',
+      TTL: notification.kind === 'CHAT_MESSAGE' ? 86400 : (notification.kind === 'VOICE_CALL' ? 120 : 3600),
+      urgency: notification.kind === 'CHAT_MESSAGE' || notification.kind === 'GAME_INVITE' || notification.kind === 'VOICE_CALL' ? 'high' : 'normal',
       topic: topic || undefined
     });
     return { ok: true };
