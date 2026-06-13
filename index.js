@@ -160,7 +160,11 @@ async function sendToSubscription(row, notification) {
   if (!sub?.endpoint) return { ok: false, reason: 'bad_subscription' };
 
   try {
-    await webpush.sendNotification(sub, JSON.stringify(notification), { TTL: 60 });
+    await webpush.sendNotification(sub, JSON.stringify(notification), {
+      TTL: notification.kind === 'CHAT_MESSAGE' ? 86400 : 3600,
+      urgency: notification.kind === 'CHAT_MESSAGE' || notification.kind === 'GAME_INVITE' ? 'high' : 'normal',
+      topic: safe(notification.tag || '').slice(0, 32) || undefined
+    });
     return { ok: true };
   } catch (err) {
     const status = Number(err.statusCode || err.status || 0);
