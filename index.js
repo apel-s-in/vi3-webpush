@@ -116,7 +116,10 @@ async function getYdb() {
     const ready = await driver.ready(10000);
     if (!ready) throw new Error('ydb_not_ready');
     return driver;
-  })();
+  })().catch(err => {
+    driverPromise = null;
+    throw err;
+  });
 
   return driverPromise;
 }
