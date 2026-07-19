@@ -184,7 +184,10 @@ async function sendToSubscription(row, notification) {
 }
 
 async function actionSendToPlayer(event, body) {
-  if (!CFG.adminSecret || safe(body.adminSecret || event.headers?.['x-vi3-admin']) !== CFG.adminSecret) {
+  const adminHeader = Object.entries(event.headers || {})
+    .find(([key]) => String(key).toLowerCase() === 'x-vi3-admin')?.[1];
+
+  if (!CFG.adminSecret || safe(adminHeader) !== CFG.adminSecret) {
     return { ok: false, error: 'bad_admin_secret' };
   }
 
