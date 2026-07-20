@@ -207,7 +207,6 @@ async function actionSendToPlayer(event, body) {
     kind: safe(body.kind || ''),
     fromFriendId: safe(body.fromFriendId || ''),
     gameId: safe(body.gameId || ''),
-    roomId: safe(body.roomId || ''),
     msgId: safe(body.msgId || ''),
     callId: safe(body.callId || '')
   };
