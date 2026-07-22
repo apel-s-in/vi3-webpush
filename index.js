@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const webpush = require('web-push');
 const ydbMod = require('ydb-sdk');
 
@@ -23,6 +24,14 @@ const TABLE = `${CFG.prefix}kv`;
 
 const safe = v => String(v == null ? '' : v).trim();
 const num = (v, d = 0) => Number.isFinite(Number(v)) ? Number(v) : d;
+
+const timingSafeEqualText = (left, right) => {
+  const a = Buffer.from(String(left || ''), 'utf8');
+  const b = Buffer.from(String(right || ''), 'utf8');
+
+  return a.length === b.length &&
+    crypto.timingSafeEqual(a, b);
+};
 
 if (CFG.vapidPublicKey && CFG.vapidPrivateKey) {
   webpush.setVapidDetails(CFG.vapidSubject, CFG.vapidPublicKey, CFG.vapidPrivateKey);
@@ -74,17 +83,30 @@ function valueOf(x) {
 }
 
 function rowsOf(res) {
-  const rs = res?.resultSets?.[0] || res?.resultSet || null;
-  const rows = rs?.rows || [];
-  const cols = (rs?.columns || []).map(c => safe(c.name || c));
-  return rows.map(r => {
-    const items = r.items || r;
-    if (!Array.isArray(items)) return r;
-    const out = {};
-    items.forEach((it, i) => {
-      out[cols[i] || `c${i}`] = valueOf(it);
-    });
-    return out;
+  const sets = Array.isArray(res?.resultSets)
+    ? res.resultSets
+    : res?.resultSet
+      ? [res.resultSet]
+      : [];
+
+  const resultSet =
+    sets.find(set => set?.rows?.length) ||
+    sets.find(set => set?.columns?.length) ||
+    null;
+
+  const columns = (resultSet?.columns || [])
+    .map(column => safe(column.name || column));
+
+  return (resultSet?.rows || []).map(row => {
+    const items = row.items || row;
+    if (!Array.isArray(items)) return row;
+
+    return Object.fromEntries(
+      items.map((item, index) => [
+        columns[index] || `c${index}`,
+        valueOf(item)
+      ])
+    );
   });
 }
 
@@ -187,16 +209,32 @@ async function actionSendToPlayer(event, body) {
   const adminHeader = Object.entries(event.headers || {})
     .find(([key]) => String(key).toLowerCase() === 'x-vi3-admin')?.[1];
 
-  if (!CFG.adminSecret || safe(adminHeader) !== CFG.adminSecret) {
-    return { ok: false, error: 'bad_admin_secret' };
+  if (
+    !CFG.adminSecret ||
+    !timingSafeEqualText(adminHeader, CFG.adminSecret)
+  ) {
+    const error = new Error('bad_admin_secret');
+    error.httpStatus = 403;
+    throw error;
   }
 
   if (!CFG.vapidPublicKey || !CFG.vapidPrivateKey) {
-    return { ok: false, error: 'vapid_env_missing' };
+    const error = new Error('vapid_env_missing');
+    error.httpStatus = 503;
+    throw error;
   }
 
-  const playerId = safe(body.playerId || body.toPlayerId || body.toFriendId);
-  if (!playerId) return { ok: false, error: 'player_required' };
+  const playerId = safe(
+    body.playerId ||
+    body.toPlayerId ||
+    body.toFriendId
+  );
+
+  if (!playerId) {
+    const error = new Error('player_required');
+    error.httpStatus = 400;
+    throw error;
+  }
 
   const notification = {
     title: safe(body.title || 'Витрина Разбита').slice(0, 80),
@@ -251,6 +289,13 @@ exports.handler = async event => {
 
     return reply(event, 400, { ok: false, error: 'bad_action', allowed: ['ping', 'send_to_player'] });
   } catch (err) {
-    return reply(event, 500, { ok: false, error: safe(err.message || 'server_error') });
+    return reply(
+      event,
+      Number(err?.httpStatus || 500),
+      {
+        ok: false,
+        error: safe(err?.message || 'server_error')
+      }
+    );
   }
 };
